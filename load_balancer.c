@@ -9,7 +9,7 @@
 #include <linux/icmp.h>
 #include <linux/ip.h>
 
-#define LOOKUP_SIZE 500 // prime number for permutation algo
+#define LOOKUP_SIZE 503 // prime number for permutation algo
 #define VALUE_SIZE 23
 #define MAX_BACKENDS 10
 
@@ -26,7 +26,7 @@ module_param_array(backend_addrs, charp, &num, S_IRUGO);
 // Maglev data structures
 static char **connection_table;
 static char **lookup_table;
-static char **permutation;
+static int **permutation;
 
 // handler for incoming traffic
 static struct nf_hook_ops nfho_in;
@@ -96,9 +96,9 @@ static void pop_permutation(void) {
         offset = hash_val;
         skip = (hash_val * 3) % LOOKUP_SIZE; // vary hash a little for skip
 
-        // for (j = 0; j < LOOKUP_SIZE; j++) {
-        //     permutation[i][j] = (offset + j * skip) % LOOKUP_SIZE;
-        // }
+        for (j = 0; j < LOOKUP_SIZE; j++) {
+            permutation[i][j] = (offset + j * skip) % LOOKUP_SIZE;
+        }
     }
 } 
 
@@ -142,19 +142,28 @@ unsigned int fn_hook_incoming(void *priv,
 
 static int loadbalancer_init(void)
 {
+    int i;
     printk(KERN_ALERT "load balancer initializing.\n");
 
     // initialize Maglev data structures
     // TODO: does this need to be atomic? bc not interrupt handler
-    connection_table = kmalloc(sizeof(char) * LOOKUP_SIZE * 
-            VALUE_SIZE, GFP_ATOMIC);
-    lookup_table = kmalloc(sizeof(char) * LOOKUP_SIZE * 
-            VALUE_SIZE, GFP_ATOMIC);
-    permutation = kmalloc(sizeof(int) * LOOKUP_SIZE *
-            10, GFP_ATOMIC);                    // 10 = num digits in max int
+    connection_table = (char**)kmalloc(sizeof(char*) * LOOKUP_SIZE, GFP_ATOMIC);
+    for (i = 0; i < LOOKUP_SIZE; i++) {
+        connection_table[i] = (char*)kmalloc(sizeof(char) * VALUE_SIZE, GFP_ATOMIC);
+    }
+
+    lookup_table = (char**)kmalloc(sizeof(char*) * LOOKUP_SIZE, GFP_ATOMIC);
+    for (i = 0; i < LOOKUP_SIZE; i++) {
+        lookup_table[i] = (char*)kmalloc(sizeof(char) * VALUE_SIZE, GFP_ATOMIC);
+    }
+
+    permutation = (int**)kmalloc(sizeof(int*) * num, GFP_ATOMIC);
+    for (i = 0; i < num; i++) {
+        permutation[i] = (int*)kmalloc(sizeof(int) * LOOKUP_SIZE, GFP_ATOMIC);
+    }
 
     pop_permutation();
-    // print_permutation();
+    print_permutation();
 
 
     // register pre-routing hook
