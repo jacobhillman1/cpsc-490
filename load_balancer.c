@@ -9,6 +9,10 @@
 #include <linux/icmp.h>
 #include <linux/ip.h>
 
+#define LOOKUP_SIZE 500 // prime number for permutation algo
+#define VALUE_SIZE 23
+#define MAX_BACKENDS 10
+
 MODULE_LICENSE("Dual BSD/GPL");
 
 // declare parameters
@@ -19,13 +23,13 @@ static char* backend_addrs[10];
 static int num = 0;
 module_param_array(backend_addrs, charp, &num, S_IRUGO);
 
+// Maglev data structures
+static char **connection_table;
+static char **lookup_table;
+static char **permutation;
+
 // handler for incoming traffic
 static struct nf_hook_ops nfho_in;
-
-struct backend_addr {
-    __u32 addr;
-    __u16 port;
-};
 
 /**
  * convert string IP addr to u32
@@ -43,8 +47,6 @@ static unsigned int ip_hdrlen(const struct sk_buff *skb) {
     return ip_hdr(skb)->ihl * 4;
 }
 
-
-
 // print params (used for testing)
 void print_params(void) {
     int i;
@@ -55,54 +57,112 @@ void print_params(void) {
     }
 }
 
+void print_permutation(void) {
+    int i, j;
+    for (i = 0; i < num; i++) {
+        for (j = 0; j < LOOKUP_SIZE; j++){
+            pr_info("[%i][%i] = %i\n", i, j, permutation[i][j]);
+        }
+    }
+}
+
+// return int hash between 0 and LOOKUP_SIZE
+// djb2 algo taken from http://www.cse.yorku.ca/~oz/hash.html
+int hash(char *str) {
+    int hash = 5381;
+    int c;
+
+    while ((c = *str++)) {
+        hash = ((hash << 5) + hash) + c; /* hash * 33 + c */
+    }
+
+    if (hash < 0) {
+        hash *= -1;
+    }
+
+    return hash % LOOKUP_SIZE;
+}
+
+/**
+ * populate permutation table according to Maglev spec
+ */
+static void pop_permutation(void) {
+    int hash_val, offset, skip;
+    int i, j;
+
+    // num = number of backends
+    for (i = 0; i < num; i++) {
+        hash_val = hash(backend_addrs[i]);
+        offset = hash_val;
+        skip = (hash_val * 3) % LOOKUP_SIZE; // vary hash a little for skip
+
+        // for (j = 0; j < LOOKUP_SIZE; j++) {
+        //     permutation[i][j] = (offset + j * skip) % LOOKUP_SIZE;
+        // }
+    }
+} 
+
 // hook for incoming packets
 unsigned int fn_hook_incoming(void *priv,
                               struct sk_buff *skb,
                               const struct nf_hook_state *state) {
     struct iphdr *ip_header; // IP header struct
     struct udphdr *udp_header; // UDP header struct
+    char buffer[100]; // buffer for 5-tuple
+    int tuple_hash; // hash for 5-tuple
 
     if (!skb) {
         return NF_ACCEPT;
     }
 
     ip_header = (struct iphdr *)skb_network_header(skb);
-    // printk(KERN_ALERT "ip_header saddr = %pI4", &ip_header->saddr);
 
     if (ip_header->protocol == IPPROTO_UDP) {
         udp_header = (struct udphdr *)(skb_transport_header(skb) + 
                 ip_hdrlen(skb));
         if (udp_header) {
             // concat 5-tuple info into a string
-            pr_info("SRC: (%pI4):%d --> DST: (%pI4):%d, protocol = %x\n",
+            snprintf(buffer, 100, "%pI4,%d,%pI4,%d,%x",
 					&ip_header->saddr,
 					ntohs(udp_header->source),
 					&ip_header->daddr,
 					ntohs(udp_header->dest),
                     ip_header->protocol
             );
+
+            // get hash for 5-tuple
+            tuple_hash = hash(buffer);
+            pr_info("hash value = %i", tuple_hash);
         }
     }
     // TEST changing the destination addr (hopefully packet will never arrive)
-    ip_header->daddr = inet_addr("172.217.164.162"); // send back to Google
+    // ip_header->daddr = inet_addr("172.217.164.162"); // send back to Google
     return NF_ACCEPT;
 }
 
 static int loadbalancer_init(void)
 {
-    // char *test = "";
     printk(KERN_ALERT "load balancer initializing.\n");
+
+    // initialize Maglev data structures
+    // TODO: does this need to be atomic? bc not interrupt handler
+    connection_table = kmalloc(sizeof(char) * LOOKUP_SIZE * 
+            VALUE_SIZE, GFP_ATOMIC);
+    lookup_table = kmalloc(sizeof(char) * LOOKUP_SIZE * 
+            VALUE_SIZE, GFP_ATOMIC);
+    permutation = kmalloc(sizeof(int) * LOOKUP_SIZE *
+            10, GFP_ATOMIC);                    // 10 = num digits in max int
+
+    pop_permutation();
+    // print_permutation();
+
 
     // register pre-routing hook
     nfho_in.hook = fn_hook_incoming;
-    nfho_in.hooknum = NF_INET_PRE_ROUTING;  // edit packets first
-    nfho_in.pf = PF_INET;                   // IPv4
+    nfho_in.hooknum = NF_INET_PRE_ROUTING; // edit packets first
+    nfho_in.pf = PF_INET; // IPv4
     nfho_in.priority = NF_IP_PRI_FIRST;     
     nf_register_net_hook(&init_net, &nfho_in);
-
-    // snprintf(test, 32, "%i", 10);
-    // pr_info("snprintf output = %s", test);
-
 
     return 0;
 }
@@ -110,6 +170,9 @@ static int loadbalancer_init(void)
 static void loadbalancer_exit(void)
 {
     nf_unregister_net_hook(&init_net, &nfho_in);
+    kfree(connection_table);
+    kfree(lookup_table);
+    kfree(permutation);
     printk(KERN_INFO "load balancer module unloaded.\n");
 }
 module_init(loadbalancer_init);
