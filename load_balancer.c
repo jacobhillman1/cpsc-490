@@ -100,6 +100,40 @@ static void pop_permutation(void) {
             permutation[i][j] = (offset + j * skip) % LOOKUP_SIZE;
         }
     }
+}
+
+/**
+ * populate the lookup table according to preferences
+ * in the permutation table
+ */
+static int pop_lookup(void) {
+    int i, n, c = 0;
+    // keep track of the index for each backend in the permutation table
+    int *next = (int*)kmalloc(sizeof(int) * num, GFP_ATOMIC);
+    for (i = 0; i < num; i++) {
+        next[i] = 0;
+    }
+
+    while (true) {
+        for (i = 0; i < num; i++) {
+            // find next open preference index for backend i
+            c = permutation[i][next[i]];
+            while (lookup_table[c] >= 0) {
+                next[i] += 1;
+                c = permutation[i][next[i]];
+            }
+
+            lookup_table[c] = backend_addrs[i]; // TODO: strcpy?
+            next[i] += 1;
+            n +=1;
+            if (n == LOOKUP_SIZE) {
+                return 1;
+            }
+        }
+    }
+
+    // shouldn't get here
+    return 0;
 } 
 
 // hook for incoming packets
@@ -153,9 +187,9 @@ static int loadbalancer_init(void)
     }
 
     lookup_table = (char**)kmalloc(sizeof(char*) * LOOKUP_SIZE, GFP_ATOMIC);
-    for (i = 0; i < LOOKUP_SIZE; i++) {
-        lookup_table[i] = (char*)kmalloc(sizeof(char) * VALUE_SIZE, GFP_ATOMIC);
-    }
+    // for (i = 0; i < LOOKUP_SIZE; i++) {
+    //     lookup_table[i] = (char*)kmalloc(sizeof(char) * VALUE_SIZE, GFP_ATOMIC);
+    // }
 
     permutation = (int**)kmalloc(sizeof(int*) * num, GFP_ATOMIC);
     for (i = 0; i < num; i++) {
@@ -163,8 +197,7 @@ static int loadbalancer_init(void)
     }
 
     pop_permutation();
-    print_permutation();
-
+    pop_lookup();
 
     // register pre-routing hook
     nfho_in.hook = fn_hook_incoming;
