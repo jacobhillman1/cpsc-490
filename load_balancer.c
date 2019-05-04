@@ -15,7 +15,7 @@
 
 MODULE_LICENSE("Dual BSD/GPL");
 
-// declare parameters
+// declare parameters (kernel equivalent to command line args)
 static char* vip = "";
 module_param(vip, charp, S_IRUGO);
 
@@ -42,11 +42,17 @@ unsigned int inet_addr(char *str) {
     return *(unsigned int*)arr;
 } 
 
-// taken from later version of linux
+/**
+ * used in creation of UDP header
+ * (taken from earlier version of linux)
+ */ 
 static unsigned int ip_hdrlen(const struct sk_buff *skb) {
     return ip_hdr(skb)->ihl * 4;
 }
 
+/**
+ * example tuple value: "127.0.0.1:5678"
+ */ 
 static unsigned int get_ip_from_tuple(char *tuple) {
     int a,b,c,d,e;
     char arr[4];
@@ -55,6 +61,9 @@ static unsigned int get_ip_from_tuple(char *tuple) {
     return *(unsigned int*)arr;
 }
 
+/**
+ * example tuple value: "127.0.0.1:5678"
+ */ 
 static __u16 get_port_from_tuple(char *tuple) {
     int a,b,c,d;
     __u16 e;
@@ -62,7 +71,9 @@ static __u16 get_port_from_tuple(char *tuple) {
     return e;
 }
 
-// print params (used for testing)
+/**
+ * print arguments passed into the module (for testing)
+ */ 
 void print_params(void) {
     int i;
     pr_info("vip: %s", vip);
@@ -72,6 +83,9 @@ void print_params(void) {
     }
 }
 
+/**
+ * print contents of the permutation table
+ */ 
 void print_permutation(void) {
     int i, j;
     for (i = 0; i < num; i++) {
@@ -81,6 +95,9 @@ void print_permutation(void) {
     }
 }
 
+/**
+ * print contents of the lookup table
+ */ 
 void print_lookup(void) {
     int i;
     for (i = 0; i < LOOKUP_SIZE; i++) {
@@ -88,8 +105,10 @@ void print_lookup(void) {
     }
 }
 
-// return int hash between 0 and LOOKUP_SIZE
-// djb2 algo taken from http://www.cse.yorku.ca/~oz/hash.html
+/**
+ * return int hash between 0 and LOOKUP_SIZE
+ * djb2 algo taken from http://www.cse.yorku.ca/~oz/hash.html
+ */  
 int hash(char *str) {
     int hash = 5381;
     int c;
@@ -116,7 +135,7 @@ static void pop_permutation(void) {
     for (i = 0; i < num; i++) {
         hash_val = hash(backend_addrs[i]);
         offset = hash_val;
-        skip = (hash_val * 3) % LOOKUP_SIZE; // vary hash a little for skip
+        skip = (hash_val * 3) % LOOKUP_SIZE; // vary hash for skip
 
         for (j = 0; j < LOOKUP_SIZE; j++) {
             permutation[i][j] = (offset + j * skip) % LOOKUP_SIZE;
@@ -130,10 +149,9 @@ static void pop_permutation(void) {
  */
 static int pop_lookup(void) {
     int i, n, c;
-    int *next;
+    int *next; // used to keep track of the index for each backend in the permutation table
     n = 0;
 
-    // keep track of the index for each backend in the permutation table
     next = (int*)kmalloc(sizeof(int) * num, GFP_ATOMIC);
     for (i = 0; i < num; i++) {
         next[i] = 0;
@@ -148,7 +166,7 @@ static int pop_lookup(void) {
                 c = permutation[i][next[i]];
             }
 
-            lookup_table[c] = backend_addrs[i]; // TODO: strcpy?
+            lookup_table[c] = backend_addrs[i];
             next[i] += 1;
             n +=1;
             if (n == LOOKUP_SIZE) {
@@ -163,7 +181,16 @@ static int pop_lookup(void) {
     return 0;
 } 
 
-// hook for incoming packets
+/**
+ * fn_hook_incoming is passed as a callback to 
+ * nfho_in. Whenever a new packet arrives at the
+ * kernel, this function is called.
+ * 
+ * In the context of a load balancer, this is the perfect
+ * time to reroute the packet. In this func, the dest addr
+ * of incoming packets is changed according to the
+ * Maglev load balancing algo.
+ */ 
 unsigned int fn_hook_incoming(void *priv,
                               struct sk_buff *skb,
                               const struct nf_hook_state *state) {
@@ -215,11 +242,12 @@ unsigned int fn_hook_incoming(void *priv,
             return NF_ACCEPT;
         }
     }
-    // TEST changing the destination addr (hopefully packet will never arrive)
-    // ip_header->daddr = inet_addr("172.217.164.162"); // send back to Google
     return NF_ACCEPT;
 }
 
+/**
+ * the first function to be called in the module (equivalent to main())
+ */ 
 static int loadbalancer_init(void)
 {
     int i;
@@ -245,7 +273,6 @@ static int loadbalancer_init(void)
     if (num != 0) { // these funcs will break if no params passed in
         pop_permutation();
         pop_lookup();
-        // print_lookup();
     }
 
     // register pre-routing hook
@@ -258,6 +285,9 @@ static int loadbalancer_init(void)
     return 0;
 }
 
+/**
+ * called when the module unmounts from the kernel
+ */ 
 static void loadbalancer_exit(void)
 {
     nf_unregister_net_hook(&init_net, &nfho_in);
@@ -266,5 +296,6 @@ static void loadbalancer_exit(void)
     kfree(permutation);
     printk(KERN_INFO "load balancer module unloaded.\n");
 }
+
 module_init(loadbalancer_init);
 module_exit(loadbalancer_exit);
