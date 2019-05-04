@@ -8,7 +8,7 @@ This is code relating to my senior thesis.
 ```
 sudo insmod load_balancer.ko backend_addrs=127.0.0.1:6789,130.132.171.22:4567
 ```
-4. The module is now running in the kernel! All network traffic to the kernel running the module will be forwarded to the addresses passed in as a parameter.
+4. The module is now running in the kernel! All network traffic to the kernel running the module will be forwarded to the addresses passed in as a parameter. Because all traffic is immediately forwarded, your computer will no longer be able to access the internet normally. Some things may still appear to work because they are cached.
 5. To remove the module, run
 ```
 sudo rmmod load_balancer
